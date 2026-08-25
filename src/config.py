@@ -1,0 +1,2 @@
+N_CELLS=200
+N_ZONES=5
