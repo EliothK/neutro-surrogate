@@ -66,7 +66,7 @@ def eigenvalue_analytic(diff_coeff, macro_absorp_cross_section, fis_neu_prod, sl
     geometric_buckling = (np.pi / slab_width) ** 2
     return fis_neu_prod / (macro_absorp_cross_section + diff_coeff * geometric_buckling)
 
-def solve_power(diff_coeff, macro_absorp_cross_section, fis_neu_prod, slabWidth, total_eigenvalue=1e-10, total_neu_flux=1e-8, powerIterationCap=20000):
+def solve_power(diff_coeff, macro_absorp_cross_section, fis_neu_prod, slabWidth, total_eigenvalue=1e-10, total_neu_flux=1e-8, power_iter_cap=20000):
     """Power iteration. Returns (eigenvalue, peakNeutronFlux, iterations)."""
 
     N = len(diff_coeff)
@@ -77,7 +77,7 @@ def solve_power(diff_coeff, macro_absorp_cross_section, fis_neu_prod, slabWidth,
     eigenvalue = 1.0
     src = fis_neu_prod * neu_flux
 
-    for it in range(powerIterationCap):
+    for it in range(power_iter_cap):
         new_neu_flux = solve_banded((1,1), band_loss, src / eigenvalue)
         src_new = fis_neu_prod * new_neu_flux
         new_eigenvalue = eigenvalue * src_new.sum() / src.sum()
@@ -89,19 +89,18 @@ def solve_power(diff_coeff, macro_absorp_cross_section, fis_neu_prod, slabWidth,
             return eigenvalue, neu_flux, it +1
     raise RuntimeError("power iteration did not converge")
 
-def solve_arpack(diff_coeff, macro_absorp_cross_section, fis_neu_prod, slab_width, tol=1e-11):
+def solve_arpack(diff_coeff, macro_absorp_cross_section, fis_neu_prod, slab_width):
     """Same eigenproblem via ARPACK on A^-1 F. Retruns (eigenvalue, peakNeutronFlux)"""
 
-    N = len(diff_coeff)
-    cell_width = slab_width / N
-    band_loss = build_operator(diff_coeff, macro_absorp_cross_section, cell_width)
+    if not np.any(fis_neu_prod):
+        raise ValueError("fission source is zero; eigenvalue problem is degenerate")
 
-    if fis_neu_prod.sum() <= 0:
-        raise ValueError("no fission source: fissionNeutronProduction is zero everywhere")
+    N = len(diff_coeff)
+    band_loss = build_operator(diff_coeff, macro_absorp_cross_section, slab_width/N)
 
     op = LinearOperator((N,N), matvec=lambda v: solve_banded((1,1), band_loss, v * fis_neu_prod), dtype=float)
 
-    vals, vecs = eigs(op, k=1, which="LM", tol=tol)
+    vals, vecs = eigs(op, k=1, which="LM", tol=1e-11)
     neu_flux = np.abs(vecs[:, 0].real)
     return float(vals[0].real), neu_flux/neu_flux.max()
 
@@ -110,5 +109,5 @@ def solve(x, method="arpack"):
     slab_width, diff_coeff, macro_absorp_cross_section, fis_neu_prod = unpack(x)
     if method == "arpack":
         return solve_arpack(diff_coeff,macro_absorp_cross_section,fis_neu_prod,slab_width)
-    eigenvalue, neutronFlux, _ = solve_power(diff_coeff,macro_absorp_cross_section,fis_neu_prod,slab_width)
-    return eigenvalue, neutronFlux
+    eigenvalue, neu_flux, _ = solve_power(diff_coeff,macro_absorp_cross_section,fis_neu_prod,slab_width)
+    return eigenvalue, neu_flux
