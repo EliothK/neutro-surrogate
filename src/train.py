@@ -10,24 +10,24 @@ import torch.nn.functional as F
 
 from .config import DATA_DIR, MODEL_DIR, RESULTS_DIR, ensure_dirs
 from .model import Normalizer, SurrogateMLP
-from .physics import bands_from_inputs, physics_weight, residual_loss
+from .physics import bands_from_input, physics_weight, residual_loss
 
 def load_split(path, device):
 
-    diff_coeff = np.load(path)
-    positions = torch.tensor(diff_coeff["X"], dtype=torch.float32, device=device)
-    eigenvalue = torch.tensor(diff_coeff["k"], dtype=torch.float32, device=device)
-    flux = torch.tensor(diff_coeff["flux"], dtype=torch.float32, device=device)
-    idx = {s: torch.tensor(diff_coeff[f"{s}_idx"], dtype=torch.long, device=device)
+    dataset = np.load(path)
+    positions = torch.tensor(dataset["positions"], dtype=torch.float32, device=device)
+    eigenvalue = torch.tensor(dataset["eigenvalue"], dtype=torch.float32, device=device)
+    flux = torch.tensor(dataset["flux"], dtype=torch.float32, device=device)
+    idx = {s: torch.tensor(dataset[f"{s}_idx"], dtype=torch.long, device=device)
            for s in ("train", "val", "test")}
-    return positions, eigenvalue, flux, idx, diff_coeff
+    return positions, eigenvalue, flux, idx, dataset
 
 def evaluate(model, norm, positions, eigenvalue, flux):
     model.eval()
     with torch.no_grad():
         eigen_hat, flux_hat = model(norm(positions))
         eigen_pcm = (eigen_hat - eigenvalue).abs() * 1e5
-        flux_l2 = ((flux_hat - flux).pow(2).sum(-1).sqrt() / flux.power(2).sum(-1).sqrt())
+        flux_l2 = ((flux_hat - flux).pow(2).sum(-1).sqrt() / flux.pow(2).sum(-1).sqrt())
     model.train()
     return {"eigen_pcm_median" : eigen_pcm.median().item(),
             "eigen_pcm_p95": eigen_pcm.quantile(0.95).item(),
@@ -59,11 +59,11 @@ def train(data_path, epochs=200, batch_size=256, lr=1e-3, lam=1.0, use_physics=F
             b = perm[i:i + batch_size]
             eigen_hat, flux_hat = model(norm(positions[b]))
 
-            loss = (F.mse_loss(torch.log(eigen_hat, torch.log(eigenvalue[b]))
-                                / eigen_var + lam * F.mse_loss(flux_hat, flux[b]) / flux_var))
+            loss = (F.mse_loss(torch.log(eigen_hat), torch.log(eigenvalue[b])) / eigen_var
+                    + lam * F.mse_loss(flux_hat, flux[b]) / flux_var)
             if mu > 0:
-                lower, diag, upper, fix_neu_prod = bands_from_inputs(positions[b])
-                loss = loss + mu * residual_loss(flux_hat, eigen_hat, lower, diag, upper, fix_neu_prod)
+                lower, diag, upper, fis_neu_prod = bands_from_input(positions[b])
+                loss = loss + mu * residual_loss(flux_hat, eigen_hat, lower, diag, upper, fis_neu_prod)
 
             opt.zero_grad()
             loss.backward()
@@ -87,7 +87,7 @@ def main():
     p.add_argument("--physics", action="store_true")
     p.add_argument("--mu-max", type=float, default=0.1)
     p.add_argument("--out", default=None)
-    args = p.parse_args
+    args = p.parse_args()
 
     ensure_dirs()
     t0 = time.perf_counter()

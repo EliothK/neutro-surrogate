@@ -2,11 +2,11 @@ name: ci
 on: [push, pull_request]
 jobs:
   test:
-    runs_on: ubuntu-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install numpy scipy pytest
+      - run: pip install numpy scipy scikit-learn torch pytest
       - run: pytest -v

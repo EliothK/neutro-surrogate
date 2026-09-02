@@ -25,7 +25,7 @@ def plot_convergence(path):
     errs = np.array(errs)
     slope = np.polyfit(np.log(ns), np.log(errs), 1)[0]
 
-    fig, ax = plt.subplot(figsize=(5.5, 4))
+    fig, ax = plt.subplots(figsize=(5.5, 4))
     ax.loglog(ns, errs, "o-", label=f"measured (slope {slope:.2f})")
     ax.loglog(ns, errs[0] * (ns / ns[0]) ** -2.0, "--", color="gray", label="ideal second order")
     ax.set_xlabel("cells N")
@@ -36,19 +36,20 @@ def plot_convergence(path):
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
+    return slope
 
 def plot_eigenvalue_distribution(data, path):
-    fig, ax = plt.subplot(figsize=(5.5, 3.5))
+    fig, ax = plt.subplots(figsize=(5.5, 3.5))
     ax.hist(data["eigenvalue"], bins=60)
     ax.set_xlabel("$eigenvalue_{eff}$")
     ax.set_ylabel("samples")
-    ax.set_titles("dataset coverage after criticality rescaling")
+    ax.set_title("dataset coverage after criticality rescaling")
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
 
 def plot_eigenvalue_parity(eigenvalue_true, eigenvalue_pred, reflector, path):
-    fig, ax = plt.subplot(figsize=(5, 5))
+    fig, ax = plt.subplots(figsize=(5, 5))
     ax.scatter(eigenvalue_true[~reflector], eigenvalue_pred[~reflector], s=4, alpha=0.4, label="no reflector")
     ax.scatter(eigenvalue_true[reflector], eigenvalue_pred[reflector], s=4, alpha=0.4, label="reflector")
     lim = [min(eigenvalue_true.min(), eigenvalue_pred.min()), max(eigenvalue_true.max(), eigenvalue_pred.max())]
@@ -91,7 +92,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data", default=str(DATA_DIR / "dataset.npz"))
     p.add_argument("--model", default=str(MODEL_DIR / "surrogate_data_only.pt"))
-    args = p.parse_args
+    args = p.parse_args()
     ensure_dirs()
 
     slope = plot_convergence(FIGURE_DIR / "convergence.png")
@@ -103,15 +104,16 @@ def main():
 
     from .benchmark import load_model
     model, norm, _ = load_model(args.model)
+    device = next(model.parameters()).device
     test = data["test_idx"]
-    positions = torch.tensor(data["positions"][test], dtype=torch.float32)
+    positions = torch.tensor(data["positions"][test], dtype=torch.float32, device=device)
     with torch.no_grad():
         eigen_hat, flux_hat = model(norm(positions))
     eigen_true= data["eigenvalue"][test]
     flux_true= data["flux"][test]
     refl = data["reflector"][test]
-    eigen_pred = eigen_hat.numpy()
-    flux_pred = flux_hat.numpy()
+    eigen_pred = eigen_hat.cpu().numpy()
+    flux_pred = flux_hat.cpu().numpy()
 
     plot_eigenvalue_parity(eigen_true, eigen_pred, refl, FIGURE_DIR / "eigen_parity.png")
     pcm = np.abs(eigen_pred - eigen_true) * 1e5

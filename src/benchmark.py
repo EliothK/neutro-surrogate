@@ -3,17 +3,19 @@
 import argparse
 import json
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
 
-from.baseline import fit_baselines
+from .baseline import fit_baselines
 from .config import DATA_DIR, MODEL_DIR, RESULTS_DIR, ensure_dirs
 from .model import Normalizer, SurrogateMLP
 from .physics import bands_from_input, residual_loss
 from .solver import solve_arpack, unpack
 
-def load_model(path, device="cpu"):
+def load_model(path, device=None):
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(path, map_location=device, weights_only=False)
     model = SurrogateMLP().to(device)
     model.load_state_dict(ckpt["state_dict"])
@@ -27,8 +29,8 @@ def accuracy(model, norm, positions, eigenvalue, flux):
     with torch.no_grad():
         eigen_hat, flux_hat = model(norm(positions))
 
-    pcm = ((eigen_hat - eigenvalue).abs() * 1e5).numpy()
-    l2 = ((flux_hat - flux).pow(2).sum(-1).sqrt() / flux.pow(2).sum(-1).sqrt()).numpy()
+    pcm = ((eigen_hat - eigenvalue).abs() * 1e5).cpu().numpy()
+    l2 = ((flux_hat - flux).pow(2).sum(-1).sqrt() / flux.pow(2).sum(-1).sqrt()).cpu().numpy()
 
     return {
         "eigen_pcm_median": float(np.median(pcm)),
@@ -102,30 +104,36 @@ def main():
     p.add_argument("--data", default=str(DATA_DIR/"dataset.npz"))
     p.add_argument("--ood", default=None)
     p.add_argument("--model", default=str(MODEL_DIR/"surrogate_data_only.pt"))
-    p.add_argument("==physics-model", default=str(MODEL_DIR/"surrogate_physics.pt"))
+    p.add_argument("--physics-model", default=str(MODEL_DIR/"surrogate_physics.pt"))
     args = p.parse_args()
 
     ensure_dirs()
-    diff_coeff = np.load(args.data)
-    test = diff_coeff["test_idx"]
-    positions = torch.tensor(diff_coeff["positions"][test], dtype=torch.float32)
-    eigenvalue = torch.tensor(diff_coeff["eigenvalue"][test], dtype=torch.float32)
-    flux = torch.tensor(diff_coeff["flux"][test], dtype=torch.float32)
+    dataset = np.load(args.data)
+    test = dataset["test_idx"]
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    positions = torch.tensor(dataset["positions"][test], dtype=torch.float32, device=device)
+    eigenvalue = torch.tensor(dataset["eigenvalue"][test], dtype=torch.float32, device=device)
+    flux = torch.tensor(dataset["flux"][test], dtype=torch.float32, device=device)
 
     out = {"n_test": len(test)}
-    model, norm, ckpt = load_model(args.model)
+    model, norm, ckpt = load_model(args.model, device=device)
     out["surrogate"] = accuracy(model, norm, positions, eigenvalue, flux)
     out["surrogate"]["physics_residual"] = physics_residual(model, norm, positions)
     out["timing"] = timing(model, norm, positions)
 
-    tr = diff_coeff["train_idx"]
-    out["baselines"] = fit_baselines(diff_coeff["positions"][tr], diff_coeff["eigenvalue"],
-                                     diff_coeff["positions"][test], diff_coeff["eigenvalue"][test],
-                                     diff_coeff["flux"][tr], diff_coeff["flux"][test])
+    if Path(args.physics_model).exists():
+        physics_model, physics_norm, _ = load_model(args.physics_model, device=device)
+        out["surrogate_physics"] = accuracy(physics_model, physics_norm, positions, eigenvalue, flux)
+        out["surrogate_physics"]["physics_residual"] = physics_residual(physics_model, physics_norm, positions)
+
+    tr = dataset["train_idx"]
+    out["baselines"] = fit_baselines(dataset["positions"][tr], dataset["eigenvalue"][tr],
+                                     dataset["positions"][test], dataset["eigenvalue"][test],
+                                     dataset["flux"][tr], dataset["flux"][test])
 
     path = RESULTS_DIR / "metrics.json"
     path.write_text(json.dumps(out, indent=2))
-    print(json.dupms(out, indent=2))
+    print(json.dumps(out, indent=2))
     print(f"\nwrote {path}")
 
 if __name__ == "__main__":
