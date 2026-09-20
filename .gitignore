@@ -4,3 +4,5 @@ data/*.npz
 models/*.pt
 
 variables.txt
+figures/
+results/
