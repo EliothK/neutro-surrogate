@@ -20,7 +20,7 @@ def zone_to_cells(zone_values, n_cells=N_CELLS):
     return np.repeat(zone_values, n_cells // len(zone_values))
 
 def unpack(x, n_cells=N_CELLS):
-    """Split a 16 element input vector into """
+    """Split an input vector into (slab_width, D, Sa, nSf) with material values expanded to cells"""
     x = np.asarray(x, dtype=float)
 
     return (float(x[IDX_SLAB]),
@@ -100,12 +100,12 @@ def solve_arpack(diff_coeff, macro_absorp_cross_section, fis_neu_prod, slab_widt
 
     op = LinearOperator((N,N), matvec=lambda v: solve_banded((1,1), band_loss, v * fis_neu_prod), dtype=float)
 
-    vals, vecs = eigs(op, k=1, which="LM", tol=1e-11)
+    vals, vecs = eigs(op, k=1, which="LM", tol=1e-11, v0=np.ones(N))  # fixed start: ARPACK's random one made solves irreproducible
     neu_flux = np.abs(vecs[:, 0].real)
     return float(vals[0].real), neu_flux/neu_flux.max()
 
 def solve(x, method="arpack"):
-    """Sovle directly from a 16 element input vector"""
+    """Solve directly from an input vector"""
     slab_width, diff_coeff, macro_absorp_cross_section, fis_neu_prod = unpack(x)
     if method == "arpack":
         return solve_arpack(diff_coeff,macro_absorp_cross_section,fis_neu_prod,slab_width)

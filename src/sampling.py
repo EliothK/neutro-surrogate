@@ -3,14 +3,31 @@
 import numpy as np
 from scipy.stats import qmc
 
-from .config import (TARGET_EIGENVALUE_RANGE, MIN_TOTAL_FISSION, N_INPUTS, N_ZONES,
-                     REFLECTOR_FRACTION, SLICE_FIS_NEU_PROD, input_bounds)
+from .config import (TARGET_EIGENVALUE_RANGE, MIN_TOTAL_FISSION, N_INPUTS, N_ZONES, REFLECTOR_FRACTION, SLICE_FIS_NEU_PROD, input_bounds)
 
-def latin_hypercube(n_samples, seed, bounds=None):
-    """Latin hypercube sample of shape (n_samples, 16), scaled into the box"""
+N_PROPERTIES = 3  # diffusion coefficient, absorption, fission production
+
+def latin_hypercube(n_samples, seed, bounds=None, n_knots=0):
+    """Latin hypercube sample of shape (n_samples, N_INPUTS), scaled into the box.
+
+    With n_knots >= 2 each property is drawn at n_knots points and linearly interpolated onto the N_ZONES zones, giving smooth spatial profiles instead of independent zones.
+    """
     low, high = bounds if bounds is not None else input_bounds()
-    unit = qmc.LatinHypercube(d=N_INPUTS, seed=seed).random(n_samples)
-    return qmc.scale(unit, low, high)
+    if n_knots < 2:
+        unit = qmc.LatinHypercube(d=N_INPUTS, seed=seed).random(n_samples)
+        return qmc.scale(unit, low, high)
+
+    unit = qmc.LatinHypercube(d=1 + N_PROPERTIES * n_knots, seed=seed).random(n_samples)
+    zone_pos = np.linspace(0.0, 1.0, N_ZONES)
+    knot_pos = np.linspace(0.0, 1.0, n_knots)
+    out = np.empty((n_samples, N_INPUTS))
+    out[:, 0] = low[0] + unit[:, 0] * (high[0] - low[0])
+    for p in range(N_PROPERTIES):
+        first = 1 + p * N_ZONES  # bounds are constant within a property block
+        knots = low[first] + unit[:, 1 + p * n_knots:1 + (p + 1) * n_knots] * (high[first] - low[first])
+        for i in range(n_samples):
+            out[i, first:first + N_ZONES] = np.interp(zone_pos, knot_pos, knots[i])
+    return out
 
 def apply_reflectors(X, rng, fraction=REFLECTOR_FRACTION):
     """Zero the fission cross section in the outermost zones for a fraction of rows"""

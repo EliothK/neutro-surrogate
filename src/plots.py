@@ -1,6 +1,7 @@
 """Regenerate every figure in the repo"""
 
 import argparse
+from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
@@ -92,14 +93,17 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data", default=str(DATA_DIR / "dataset.npz"))
     p.add_argument("--model", default=str(MODEL_DIR / "surrogate_data_only.pt"))
+    p.add_argument("--fig-dir", default=str(FIGURE_DIR))
     args = p.parse_args()
     ensure_dirs()
+    fig_dir = Path(args.fig_dir)
+    fig_dir.mkdir(parents=True, exist_ok=True)
 
-    slope = plot_convergence(FIGURE_DIR / "convergence.png")
+    slope = plot_convergence(fig_dir / "convergence.png")
     print(f"convergence.png     slop {slope:.3f}")
 
     data = np.load(args.data)
-    plot_eigenvalue_distribution(data, FIGURE_DIR / "eigenvalue_distribution.png")
+    plot_eigenvalue_distribution(data, fig_dir / "eigenvalue_distribution.png")
     print("eigenvalue_distribution.png")
 
     from .benchmark import load_model
@@ -115,9 +119,9 @@ def main():
     eigen_pred = eigen_hat.cpu().numpy()
     flux_pred = flux_hat.cpu().numpy()
 
-    plot_eigenvalue_parity(eigen_true, eigen_pred, refl, FIGURE_DIR / "eigen_parity.png")
+    plot_eigenvalue_parity(eigen_true, eigen_pred, refl, fig_dir / "eigen_parity.png")
     pcm = np.abs(eigen_pred - eigen_true) * 1e5
-    plot_error_hist(pcm, FIGURE_DIR / "eigen_error_hist.png")
+    plot_error_hist(pcm, fig_dir / "eigen_error_hist.png")
     print("eigen_parity.png, eigen_error_hist.png")
 
     l2 = (np.linalg.norm(flux_pred - flux_true, axis=1)
@@ -129,7 +133,7 @@ def main():
     cases = [(f"typical (L2 {l2[typical]:.3f})", flux_true[typical], flux_pred[typical]),
              (f"reflector (L2 {l2[reflector_idx]:.3f})", flux_true[reflector_idx], flux_pred[reflector_idx]),
              (f"WORST (L2 {l2[worst]:.3f})", flux_true[worst], flux_pred[worst])]
-    plot_flux_profiles(xg, cases, FIGURE_DIR / "flux_profiles.png")
+    plot_flux_profiles(xg, cases, fig_dir / "flux_profiles.png")
     print("flux_profiles.png")
 
 if __name__ == "__main__":

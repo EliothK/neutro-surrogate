@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 from .baseline import fit_baselines
-from .config import DATA_DIR, MODEL_DIR, RESULTS_DIR, ensure_dirs
+from .config import DATA_DIR, DEFAULT_ACTIVATION, DEFAULT_DEPTH, DEFAULT_DROPOUT, DEFAULT_WIDTH, MODEL_DIR, RESULTS_DIR, ensure_dirs
 from .model import Normalizer, SurrogateMLP
 from .physics import bands_from_input, residual_loss
 from .solver import solve_arpack, unpack
@@ -17,15 +17,15 @@ from .solver import solve_arpack, unpack
 def load_model(path, device=None):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(path, map_location=device, weights_only=False)
-    model = SurrogateMLP().to(device)
+    model = SurrogateMLP(width=ckpt.get("width", DEFAULT_WIDTH), depth=ckpt.get("depth", DEFAULT_DEPTH),
+                         activation=ckpt.get("activation", DEFAULT_ACTIVATION), dropout=ckpt.get("dropout", DEFAULT_DROPOUT)).to(device)
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
     norm = Normalizer.from_state_dict(ckpt["normalizer"])
     return model, norm, ckpt
 
 def accuracy(model, norm, positions, eigenvalue, flux):
-    """Percentiles, not just means. A mean hides the tail, and the tail is what
-    a reactor engineer cares about"""
+    """Percentiles, not just means. A mean hides the tail, and the tail is what a reactor engineer cares about"""
     with torch.no_grad():
         eigen_hat, flux_hat = model(norm(positions))
 
@@ -102,7 +102,7 @@ def timing(model, norm, positions, n_solver=200, n_warm=20, batch=1000):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data", default=str(DATA_DIR/"dataset.npz"))
-    p.add_argument("--ood", default=None)
+    p.add_argument("--results", default=str(RESULTS_DIR / "metrics.json"))
     p.add_argument("--model", default=str(MODEL_DIR/"surrogate_data_only.pt"))
     p.add_argument("--physics-model", default=str(MODEL_DIR/"surrogate_physics.pt"))
     args = p.parse_args()
@@ -131,7 +131,7 @@ def main():
                                      dataset["positions"][test], dataset["eigenvalue"][test],
                                      dataset["flux"][tr], dataset["flux"][test])
 
-    path = RESULTS_DIR / "metrics.json"
+    path = Path(args.results)
     path.write_text(json.dumps(out, indent=2))
     print(json.dumps(out, indent=2))
     print(f"\nwrote {path}")

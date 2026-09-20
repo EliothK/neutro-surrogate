@@ -3,7 +3,7 @@
 import torch
 import torch.nn.functional as F
 
-from .config import CELLS_PER_ZONE, N_CELLS, SLICE_DIFF_COEFFICIENT, SLICE_FIS_NEU_PROD, SLICE_MACRO_ABSORP_CROSS_SECTION
+from .config import CELLS_PER_ZONE, IDX_SLAB, N_CELLS, SLICE_DIFF_COEFFICIENT, SLICE_FIS_NEU_PROD, SLICE_MACRO_ABSORP_CROSS_SECTION
 
 def expand_zones(zones_values, cells_per_zone=CELLS_PER_ZONE):
     """(B, n_zones) > (B, n_cells), matching solver.zone_to_cells"""
@@ -11,7 +11,7 @@ def expand_zones(zones_values, cells_per_zone=CELLS_PER_ZONE):
 
 def bands_from_input(positions, n_cells=N_CELLS):
     """Build (lower, diag, upper, fis_neu_prod) from a batch of raw (unnormalsed inputs)"""
-    slab_width = positions[:, 0:1]
+    slab_width = positions[:, IDX_SLAB:IDX_SLAB + 1]
     cell_width2 = (slab_width / n_cells) ** 2
 
     diff_coeff = expand_zones(positions[:, SLICE_DIFF_COEFFICIENT])

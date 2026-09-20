@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from src.config import N_INPUTS, SLICE_FIS_NEU_PROD, input_bounds, widened_bounds
+from src.config import N_INPUTS, N_ZONES, SLICE_FIS_NEU_PROD, input_bounds, widened_bounds
 from src.sampling import (apply_reflectors, is_degenerate, latin_hypercube, make_splits, rescale_to_target_eigenvalue)
 from src.solver import solve_arpack, unpack
 
@@ -48,3 +48,11 @@ def test_splits_are_disjoint_and_complete():
     all_idx = np.concatenate([train, val, test])
     assert len(all_idx) == 1000
     assert len(np.unique(all_idx)) == 1000
+
+def test_smooth_profiles_are_in_bounds_and_piecewise_linear():
+    low, high = input_bounds()
+    positions = latin_hypercube(100, seed=3, n_knots=4)
+    assert positions.shape == (100, N_INPUTS)
+    assert np.all(positions >= low) and np.all(positions <= high)
+    diff = positions[:, 1:1 + N_ZONES]
+    assert np.abs(np.diff(diff, axis=1)).max() < 0.5 * (diff.max() - diff.min())

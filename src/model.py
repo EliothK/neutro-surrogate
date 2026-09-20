@@ -1,17 +1,23 @@
-"""Surrogate network: 16 inputs > eigenvalue eff and a 200 point flux profile"""
+"""Surrogate network: N_INPUTS parameters > eigenvalue eff and an N_CELLS point flux profile"""
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-from .config import N_CELLS, N_INPUTS
+from .config import DEFAULT_ACTIVATION, DEFAULT_DEPTH, DEFAULT_DROPOUT, DEFAULT_WIDTH, N_CELLS, N_INPUTS
+
+ACTIVATIONS = {"silu": nn.SiLU, "relu": nn.ReLU, "gelu": nn.GELU, "tanh": nn.Tanh}
 
 class SurrogateMLP(nn.Module):
-    def __init__(self, n_inputs=N_INPUTS, n_cells=N_CELLS, width=256, depth=3):
+    def __init__(self, n_inputs=N_INPUTS, n_cells=N_CELLS, width=DEFAULT_WIDTH, depth=DEFAULT_DEPTH,
+                 activation=DEFAULT_ACTIVATION, dropout=DEFAULT_DROPOUT):
         super().__init__()
         layers = []
         d_in = n_inputs
         for _ in range(depth):
-            layers += [nn.Linear(d_in, width), nn.SiLU()]
+            layers += [nn.Linear(d_in, width), ACTIVATIONS[activation]()]
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
             d_in = width
         self.trunk = nn.Sequential(*layers)
         self.eigenvalue_head = nn.Linear(width, 1)
@@ -21,7 +27,7 @@ class SurrogateMLP(nn.Module):
         """pos_on_slab_normal is standardised. Returns (eigenvalue, flux) in physical terms"""
         z = self.trunk(pos_on_slab_normal)
         eigenvalue = torch.exp(self.eigenvalue_head(z)).squeeze(-1)
-        flux = self.flux_head(z)
+        flux = F.softplus(self.flux_head(z))  # flux is physically non-negative
         flux = flux / flux.amax(dim=-1, keepdim=True).clamp_min(1e-8)
         return eigenvalue, flux
 
