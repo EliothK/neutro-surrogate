@@ -10,6 +10,7 @@ The physics reference is a finite-volume solver (`src/solver.py`) that finds the
 
 with zero-flux boundary conditions, via `scipy.sparse.linalg.eigs` on a banded system.
 This solve is the ground truth used to train and evaluate a PyTorch MLP (`src/model.py`) that maps slab/material parameters directly to `(k_eff, flux profile)`, optionally regularized by the diffusion-equation residual itself (`src/physics.py`) as a physics-informed loss term.
+`src/hybrid.py` then turns the predicted flux into `k` by a Rayleigh quotient and re-fits it with a cheap Rayleigh-Ritz step; with no solver calls this gets `k` to within a few pcm RMSE at about 25x the solver's speed in batches (see step 8 below).
 
 ## Project layout
 
@@ -23,7 +24,7 @@ src/
   train.py      training loop (data-only or physics-informed)
   baseline.py   non-neural baselines (ridge regression, gradient-boosted trees)
   benchmark.py  accuracy metrics, baseline comparison, and timing/speedup
-  hybrid.py     surrogate flux + Rayleigh-quotient k, inverse-power refinement, residual gate to the solver
+  hybrid.py     surrogate flux + Rayleigh-quotient k, inverse-power refinement, Rayleigh-Ritz amplitude re-fit, residual gate to the solver
   plots.py      regenerates the figures in figures/
   make_dataset.py  builds data/dataset_rescaled.npz: LHS design -> solve -> criticality -> rescale -> train/val/test split
   pipeline.py   runs the whole thing end to end (see "Run everything" below)
@@ -167,10 +168,11 @@ Trials are stored in SQLite (`results/optuna_<dataset>[_physics].db`), so a cras
 
 Cost: each trial is `--folds` trainings, and the search space allows up to 800 epochs and width 768, so trials vary a lot in length. Use fewer folds or trials, or `--timeout-hours`, to bound it.
 
-**8. Hybrid prediction.** The operator is symmetric, so `k` computed from the predicted flux by a Rayleigh quotient has an error quadratic in the flux error, far below the network's own eigenvalue head. `src.hybrid` adds three stages on top of the network:
+**8. Hybrid prediction.** The operator is symmetric, so `k` computed from the predicted flux by a Rayleigh quotient has an error quadratic in the flux error, far below the network's own eigenvalue head. `src.hybrid` adds these stages on top of the network:
 
 - Rayleigh-quotient `k` and the relative residual `||A phi - F phi / k|| / ||F phi / k||` of the predicted flux.
 - `--refine N` inverse-power steps, each one tridiagonal solve; they converge as `k2/k1`, so they cannot fix near-degenerate cores.
+- `--ritz M`: a Rayleigh-Ritz step over the predicted flux times `M` hat functions, then one more inverse-power step. It keeps the network's shape within each hat and re-fits the amplitudes between them, which is exactly what goes wrong in near-degenerate cores. It is variational, so its `k` never exceeds the true `k` and never falls below the plain Rayleigh quotient.
 - A residual gate: the threshold is set on the validation split so that a `--fallback` fraction of samples fails it, and those samples are solved exactly instead.
 
 ```bash
@@ -209,3 +211,21 @@ Results across datasets (2% gate calibrated on in-distribution validation, MSE-l
 The Rayleigh-quotient `k` beats the direct head on every set.
 The gate fails safe: a threshold that flags 2% of in-distribution samples flags about 18% of out-of-distribution ones by itself, trading speed for accuracy there.
 The natural dataset has a much heavier flux tail (relative L2 p99 above 110%), and the residual gate recovers less of it.
+
+**Ritz re-fit (recommended).** The worst Rayleigh-quotient errors all underestimate `k`, with the power in the wrong region and a small residual, so no residual threshold catches them; re-fitting the amplitudes fixes them without calling the solver. Use `M = 17` or `M = 33`: those put hat nodes on the 16 zone boundaries, and misaligned values (25, 32) do clearly worse out of distribution.
+
+```bash
+python -m src.hybrid --model models/<checkpoint>.pt --data data/dataset_natural.npz --refine 1 --ritz 17 --fallback 0 --timing
+```
+
+Results with no gate and no solver calls (MSE-loss models, two seeds, batch of 3000 on a GTX 1080 Ti):
+
+| | rescaled test `k` RMSE | natural test `k` RMSE | rescaled OOD `k` RMSE | natural OOD `k` RMSE | flux rel-L2 mean (test) | speedup vs solver |
+|---|---|---|---|---|---|---|
+| refine 1, no Ritz | 84 to 95 pcm | 204 to 222 pcm | 820 to 950 pcm | 1470 to 1600 pcm | 1.8 to 3.6% | about 200x |
+| refine 1, Ritz `M = 17` | 1.5 to 2.3 pcm | 4.6 to 7.5 pcm | 35 to 40 pcm | 24 to 28 pcm | 0.18 to 0.28% | 25 to 28x |
+| refine 1, Ritz `M = 33` | 0.3 pcm | 0.5 to 0.7 pcm | 4 to 7 pcm | 1.9 to 2.3 pcm | 0.03 to 0.07% | 7 to 8x |
+
+`M = 17` beats the 2% residual gate on both accuracy and speed, and it keeps its speed out of distribution, where the gate sends about 18% of samples to the solver.
+`M = 33` runs its small eigenproblems on the CPU, because batched GPU `eigh` is about 25x slower than the CPU above 32 x 32 on this setup.
+The network still matters: started from a flat flux instead, the same `M = 17` pipeline gives `k` RMSE of about 260 to 290 pcm.

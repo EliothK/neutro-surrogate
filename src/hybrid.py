@@ -2,9 +2,11 @@
 
 The operator is symmetric, so the Rayleigh quotient's k error is quadratic in the flux error: an accurate flux gives a much better k than the network's own eigenvalue head.
 Optional inverse-power steps (one tridiagonal solve each) polish the flux further; they converge as k2/k1, so they cannot rescue near-degenerate cores.
-Those are the samples the residual gate is for: a large residual ||A phi - F phi / k|| / ||F phi / k|| flags a flux that does not satisfy the equation, and the solver answers instead.
+In those cores the network usually gets the shape within each region right but puts the power in the wrong region.
+A Rayleigh-Ritz step over the predicted flux times m hat functions re-fits those amplitudes; it is variational, so it can only move k towards the true value.
+A residual gate can still send doubtful samples to the solver: a large residual ||A phi - F phi / k|| / ||F phi / k|| flags a flux that does not satisfy the equation.
 
-Run with `python -m src.hybrid --model models/tuned_dataset_rescaled_physics.pt --data data/dataset_rescaled.npz --fallback 0.05`.
+Run with `python -m src.hybrid --model models/tuned_dataset_rescaled_physics.pt --data data/dataset_rescaled.npz --refine 1 --ritz 17 --fallback 0`.
 """
 
 import argparse
@@ -74,8 +76,40 @@ def inverse_power_steps(positions, flux, steps, small_batch=SMALL_BATCH):
     return flux
 
 
-def predict(model, norm, positions, refine=0, threshold=None):
+def hat_functions(m, n_cells, dtype=torch.float64, device=None):
+    """m piecewise-linear hat functions on the cell centres, forming a partition of unity; shape (m, n_cells)."""
+    x = (torch.arange(n_cells, dtype=dtype, device=device) + 0.5) / n_cells
+    nodes = torch.linspace(0, 1, m, dtype=dtype, device=device)
+    return (1 - (x[None, :] - nodes[:, None]).abs() * (m - 1)).clamp_min(0)
+
+
+def ritz(positions, flux, m):
+    """Rayleigh-Ritz on span{flux * hat_j, j = 1..m}: keeps the predicted shape within each hat and re-fits the amplitudes between them.
+    Returns (k, flux) for the top Ritz pair; k is variational, so it never exceeds the true k and is never below the Rayleigh quotient of `flux` itself."""
+    lower, diag, upper, fis_neu_prod = bands_from_input(positions)
+    batch, n = flux.shape
+    V = flux[:, None, :] * hat_functions(m, n, flux.dtype, flux.device)[None]
+    rep = lambda t: t.repeat_interleave(m, 0)
+    AV = tridiag_matvec(rep(lower), rep(diag), rep(upper), V.reshape(batch * m, n)).reshape(batch, m, n)
+    A_m = V @ AV.transpose(1, 2)
+    F_m = V @ (fis_neu_prod[:, None, :] * V).transpose(1, 2)
+    # reduce the generalized problem F c = k A c to a standard one with the Cholesky factor of A_m (symmetric positive definite)
+    jitter = 1e-14 * A_m.diagonal(dim1=1, dim2=2).mean(-1)[:, None, None] * torch.eye(m, dtype=A_m.dtype, device=A_m.device)
+    L_inv = torch.linalg.inv(torch.linalg.cholesky(A_m + jitter))
+    S_m = L_inv @ F_m @ L_inv.transpose(1, 2)
+    if S_m.is_cuda and m > 32:  # batched GPU eigh falls off a cliff above 32 x 32 (about 25x slower than CPU at m = 33)
+        w, U = (t.to(S_m.device) for t in torch.linalg.eigh(S_m.cpu()))
+    else:
+        w, U = torch.linalg.eigh(S_m)
+    coef = (L_inv.transpose(1, 2) @ U[:, :, -1:]).squeeze(-1)
+    out = (coef[:, :, None] * V).sum(1)
+    out = out * torch.sign(out.sum(-1, keepdim=True))
+    return w[:, -1], out / out.amax(-1, keepdim=True)
+
+
+def predict(model, norm, positions, refine=0, ritz_m=0, threshold=None):
     """Hybrid prediction for raw inputs `positions` (B, N_INPUTS).
+    The flux goes through `refine` inverse-power steps; with ritz_m > 0 it then gets a Rayleigh-Ritz amplitude re-fit and one more inverse-power step.
     Returns a dict of tensors: k (Rayleigh, or solver where gated), flux, k_direct (network head), residual and fallback (bool mask).
     With threshold=None nothing is sent to the solver."""
     model.eval()
@@ -83,6 +117,8 @@ def predict(model, norm, positions, refine=0, threshold=None):
         k_direct, flux = model(norm(positions))
         positions, flux = positions.double(), flux.double()
         flux = inverse_power_steps(positions, flux, refine)
+        if ritz_m > 0:
+            flux = inverse_power_steps(positions, ritz(positions, flux, ritz_m)[1], 1)
         k, resid = rayleigh_residual(positions, flux)
     fallback = resid > threshold if threshold is not None else torch.zeros_like(resid, dtype=torch.bool)
     for i in torch.nonzero(fallback).flatten().tolist():
@@ -101,9 +137,9 @@ def score(out, eigenvalue, flux):
             "flux": flux_report(flux_true, out["flux"].cpu().numpy())}
 
 
-def timing(model, norm, positions, threshold, refine=1, n_solver=200, repeats=5):
+def timing(model, norm, positions, threshold, refine=1, ritz_m=0, n_solver=200, repeats=5):
     """Wall-clock cost per sample of each hybrid stage, against the ARPACK solver on the same inputs.
-    Stages are cumulative: network, then Rayleigh k and residual, then refinement, then the gate with its solver calls."""
+    Stages are cumulative: network, then Rayleigh k and residual, then refinement, then Ritz (if ritz_m), then the gate with its solver calls (if threshold)."""
     dev = positions.device
     sync = torch.cuda.synchronize if dev.type == "cuda" else (lambda: None)
 
@@ -128,12 +164,15 @@ def timing(model, norm, positions, threshold, refine=1, n_solver=200, repeats=5)
 
     stages = {"network": net,
               "+ rayleigh k and residual": lambda xb: predict(model, norm, xb, refine=0),
-              f"+ {refine} inverse-power step(s)": lambda xb: predict(model, norm, xb, refine=refine),
-              "+ residual gate (solver fallback)": lambda xb: predict(model, norm, xb, refine=refine, threshold=threshold)}
+              f"+ {refine} inverse-power step(s)": lambda xb: predict(model, norm, xb, refine=refine)}
+    if ritz_m:
+        stages[f"+ ritz m={ritz_m} and 1 more step"] = lambda xb: predict(model, norm, xb, refine=refine, ritz_m=ritz_m)
+    if threshold is not None:
+        stages["+ residual gate (solver fallback)"] = lambda xb: predict(model, norm, xb, refine=refine, ritz_m=ritz_m, threshold=threshold)
     report = {"device": str(dev), "solver_ms_per_sample": solver_ms, "stages": {}}
     for batch in (1, len(positions)):
         xb = positions[:batch]
-        fallback = float(predict(model, norm, xb, refine=refine, threshold=threshold)["fallback"].float().mean())
+        fallback = float(predict(model, norm, xb, refine=refine, ritz_m=ritz_m, threshold=threshold)["fallback"].float().mean())
         rows = {}
         for name, fn in stages.items():
             ms = per_sample_ms(fn, xb) if batch > 1 else min(per_sample_ms(fn, positions[i:i + 1]) for i in range(20))
@@ -147,7 +186,8 @@ def main():
     p.add_argument("--model", required=True)
     p.add_argument("--data", default=str(DATA_DIR / "dataset_rescaled.npz"))
     p.add_argument("--refine", type=int, default=1, help="inverse-power steps applied to the surrogate flux")
-    p.add_argument("--fallback", type=float, default=0.05, help="fraction of val sent to the solver; sets the residual threshold")
+    p.add_argument("--ritz", type=int, default=0, help="hat functions for the Rayleigh-Ritz amplitude re-fit (0 = off; 17 or 33 work well)")
+    p.add_argument("--fallback", type=float, default=0.05, help="fraction of val sent to the solver; sets the residual threshold (0 = no gate)")
     p.add_argument("--calibrate-on", default="val", help="split used to set the threshold; use a split the model did not train on")
     p.add_argument("--eval-data", default=None, help="score the test split of this dataset instead (e.g. an --ood set); the threshold is still set on --data")
     p.add_argument("--timing", action="store_true", help="also time each stage against the solver on the test split")
@@ -162,16 +202,17 @@ def main():
         print("warning: this model was trained on train+val, so a val-calibrated threshold is set on in-sample data")
 
     cal = idx[args.calibrate_on]
-    resid_cal = predict(model, norm, positions[cal], refine=args.refine)["residual"].cpu().numpy()
+    resid_cal = predict(model, norm, positions[cal], refine=args.refine, ritz_m=args.ritz)["residual"].cpu().numpy()
     threshold = float(np.quantile(resid_cal, 1.0 - args.fallback)) if args.fallback > 0 else None
 
     if args.eval_data:
         positions, eigenvalue, flux, idx, _ = load_split(args.eval_data, device)
     te = idx["test"]
     report = {"model": args.model, "data": args.data, "eval_data": args.eval_data or args.data, "refine": args.refine,
-              "threshold": threshold, "calibrated_on": args.calibrate_on, "target_fallback": args.fallback}
-    for name, thr in (("surrogate_only", None), ("gated", threshold)):
-        report[name] = score(predict(model, norm, positions[te], refine=args.refine, threshold=thr),
+              "ritz": args.ritz, "threshold": threshold, "calibrated_on": args.calibrate_on, "target_fallback": args.fallback}
+    runs = (("surrogate_only", None),) + ((("gated", threshold),) if threshold is not None else ())
+    for name, thr in runs:
+        report[name] = score(predict(model, norm, positions[te], refine=args.refine, ritz_m=args.ritz, threshold=thr),
                              eigenvalue[te].double(), flux[te].double())
         r = report[name]
         print(f"{name:15s} fallback {r['fallback_fraction']:.1%} | flux R2 {r['flux']['r2']:.5f} RMSE {r['flux']['rmse']:.5f} MAE {r['flux']['mae']:.5f} "
@@ -179,7 +220,7 @@ def main():
               f"k R2 {r['k']['r2']:.6f} RMSE {r['k']['rmse_pcm']:.1f} MAE {r['k']['mae_pcm']:.1f} median {r['k']['median_abs_pcm']:.2f} "
               f"p99 {r['k']['p99_abs_pcm']:.1f} pcm MAPE {r['k']['mape']:.4f}%")
     if args.timing:
-        report["timing"] = timing(model, norm, positions[te], threshold, refine=args.refine)
+        report["timing"] = timing(model, norm, positions[te], threshold, refine=args.refine, ritz_m=args.ritz)
         print(f"solver {report['timing']['solver_ms_per_sample']:.3f} ms/sample on {report['timing']['device']}")
         for batch, rows in report["timing"]["stages"].items():
             print(f"{batch} (fallback {rows['fallback_fraction']:.1%})")
