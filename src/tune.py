@@ -37,8 +37,8 @@ MIN_MARGIN = 0.02
 PHYSICS_ONLY = ("mu_max", "ramp_frac")
 
 
-def suggest_config(trial, physics=False):
-    """Draw one full configuration from the search space."""
+def suggest_config(trial, physics=False, flux_options=False):
+    """Draw one full configuration from the search space; flux_options also searches `flux_loss` and `zone_head`."""
     cfg = dict(DEFAULT_CONFIG)
     cfg.update(
         epochs=trial.suggest_int("epochs", 100, 800, step=50),
@@ -55,16 +55,25 @@ def suggest_config(trial, physics=False):
     )
     if physics:
         cfg.update(mu_max=trial.suggest_float("mu_max", 1e-3, 1.0, log=True), ramp_frac=trial.suggest_float("ramp_frac", 0.05, 0.5))
+    if flux_options:
+        cfg.update(flux_loss=trial.suggest_categorical("flux_loss", ["mse", "shape", "blend"]),
+                   zone_head=trial.suggest_categorical("zone_head", [False, True]))
     return cfg
 
 
-def relative_score(metrics, ref):
-    """Eigenvalue and flux median errors relative to the reference (default-config) errors, averaged."""
-    return 0.5 * (metrics["eigen_pcm_median"] / ref["eigen_pcm_median"] + metrics["flux_l2_median"] / ref["flux_l2_median"])
+SCORE_KEYS = {"default": ("eigen_pcm_median", "flux_l2_median"),
+              "ritz": ("ritz_k_pcm_rmse", "ritz_flux_l2_mean")}
 
 
-def fold_scores(per_fold, ref):
-    return [relative_score(f, ref) for f in per_fold]
+def relative_score(metrics, ref, objective="default"):
+    """The objective's two errors relative to the reference (default-config) errors, averaged.
+    "default" uses the network's own eigenvalue and flux median errors; "ritz" uses the k RMSE and mean flux L2 after the hybrid Ritz pipeline."""
+    k_key, flux_key = SCORE_KEYS[objective]
+    return 0.5 * (metrics[k_key] / ref[k_key] + metrics[flux_key] / ref[flux_key])
+
+
+def fold_scores(per_fold, ref, objective="default"):
+    return [relative_score(f, ref, objective) for f in per_fold]
 
 
 def write_trials_csv(study, path):
@@ -136,10 +145,15 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--timeout-hours", type=float, default=None, help="stop starting new trials after this long")
     p.add_argument("--fresh", action="store_true", help="delete any saved study and start over")
+    p.add_argument("--objective", choices=tuple(SCORE_KEYS), default="default",
+                   help="ritz: score k and flux after the hybrid Ritz pipeline, and also search flux_loss and zone_head")
+    p.add_argument("--ritz", type=int, default=17, help="hat functions for --objective ritz")
     args = p.parse_args()
 
     ensure_dirs()
-    tag = f"{Path(args.data).stem}{'_physics' if args.physics else ''}"
+    use_ritz = args.objective == "ritz"
+    ritz_m = args.ritz if use_ritz else 0
+    tag = f"{Path(args.data).stem}{'_physics' if args.physics else ''}{'_ritz' if use_ritz else ''}"
     db = RESULTS_DIR / f"optuna_{tag}.db"
     if args.fresh and db.exists():
         db.unlink()
@@ -157,28 +171,29 @@ def main():
         pruner=optuna.pruners.MedianPruner(n_startup_trials=8, n_warmup_steps=0))
 
     def cv(config, seed=args.seed, after_fold=None):
-        return cross_validate(args.data, config, args.physics, args.folds, seed, device, loaded, after_fold)
+        return cross_validate(args.data, config, args.physics, args.folds, seed, device, loaded, after_fold, ritz_m=ritz_m)
 
     # Reference: the default config under CV (seed 0), plus two more seeds to measure run-to-run noise.
     if "ref" not in study.user_attrs:
         print("evaluating the default config (3 seeds) for the reference and noise floor ...", flush=True)
         runs = [cv(DEFAULT_CONFIG, seed=args.seed + s) for s in range(3)]
         ref = runs[0]["mean"]
-        noise = max(abs(relative_score(r["mean"], ref) - 1.0) for r in runs[1:])
+        noise = max(abs(relative_score(r["mean"], ref, args.objective) - 1.0) for r in runs[1:])
         study.set_user_attr("ref", ref)
         study.set_user_attr("noise", noise)
         study.set_user_attr("base_folds", runs[0]["folds"])
         study.set_user_attr("base_std", runs[0]["std"])
-        print(f"  default CV: {ref['eigen_pcm_median']:.1f} pcm, flux L2 {ref['flux_l2_median']:.4f}; "
+        extra = f", ritz k RMSE {ref['ritz_k_pcm_rmse']:.2f} pcm, ritz flux L2 mean {ref['ritz_flux_l2_mean']:.4f}" if use_ritz else ""
+        print(f"  default CV: {ref['eigen_pcm_median']:.1f} pcm, flux L2 {ref['flux_l2_median']:.4f}{extra}; "
               f"noise {noise:.3f}", flush=True)
     ref, noise = study.user_attrs["ref"], study.user_attrs["noise"]
     margin = max(MIN_MARGIN, noise)
 
     def objective(trial):
-        config = suggest_config(trial, args.physics)
+        config = suggest_config(trial, args.physics, use_ritz)
 
         def after_fold(i, per_fold):
-            trial.report(float(np.mean(fold_scores(per_fold, ref))), step=i)
+            trial.report(float(np.mean(fold_scores(per_fold, ref, args.objective))), step=i)
             if trial.should_prune():
                 raise optuna.TrialPruned()
 
@@ -186,13 +201,14 @@ def main():
         trial.set_user_attr("cv_mean", result["mean"])
         trial.set_user_attr("cv_std", result["std"])
         trial.set_user_attr("folds", result["folds"])
-        return relative_score(result["mean"], ref)
+        return relative_score(result["mean"], ref, args.objective)
 
     def report(study_, trial):
         if trial.state == optuna.trial.TrialState.COMPLETE:
             best = " *best*" if study_.best_trial.number == trial.number else ""
-            print(f"trial {trial.number:3d}  score {trial.value:6.3f}  ({trial.user_attrs['cv_mean']['eigen_pcm_median']:.0f} pcm)"
-                  f"{best}", flush=True)
+            cm = trial.user_attrs["cv_mean"]
+            detail = f"ritz k RMSE {cm['ritz_k_pcm_rmse']:.2f} pcm, flux {cm['ritz_flux_l2_mean']:.4f}" if use_ritz else f"{cm['eigen_pcm_median']:.0f} pcm"
+            print(f"trial {trial.number:3d}  score {trial.value:6.3f}  ({detail}){best}", flush=True)
         elif trial.state == optuna.trial.TrialState.PRUNED:
             print(f"trial {trial.number:3d}  pruned", flush=True)
 
@@ -209,14 +225,15 @@ def main():
         return
     best_trial = study.best_trial
     beats_defaults = best_trial.value < 1.0 - margin
-    best_config = suggest_config(optuna.trial.FixedTrial(best_trial.params), args.physics) if beats_defaults \
+    best_config = suggest_config(optuna.trial.FixedTrial(best_trial.params), args.physics, use_ritz) if beats_defaults \
         else dict(DEFAULT_CONFIG)
     best_cv = best_trial.user_attrs if beats_defaults else {"cv_mean": ref, "cv_std": study.user_attrs["base_std"], "folds": study.user_attrs["base_folds"]}
 
     print("refitting the chosen config on the whole train + val pool and scoring the test split (once)", flush=True)
-    test = refit_and_test(args.data, best_config, args.physics, args.seed, device, loaded)
+    test = refit_and_test(args.data, best_config, args.physics, args.seed, device, loaded, ritz_m=ritz_m)
 
-    result = {"data": args.data, "physics": args.physics, "folds": args.folds, "trials": len(study.trials),
+    result = {"data": args.data, "physics": args.physics, "objective": args.objective, "ritz": ritz_m,
+              "folds": args.folds, "trials": len(study.trials),
               "noise_margin": margin, "default_cv": ref, "beats_defaults": beats_defaults,
               "best": {"config": best_config, "score": best_trial.value if beats_defaults else 1.0,
                        "cv_mean": best_cv["cv_mean"], "cv_std": best_cv["cv_std"], "test": test}}
@@ -233,6 +250,9 @@ def main():
     print(f"  cv:   {cm['eigen_pcm_median']:.1f} +/- {cs['eigen_pcm_median']:.1f} pcm, "
           f"flux L2 {cm['flux_l2_median']:.4f} +/- {cs['flux_l2_median']:.4f}  ({args.folds} folds)")
     print(f"  test: {test['eigen_pcm_median']:.1f} pcm, flux L2 {test['flux_l2_median']:.4f}")
+    if use_ritz:
+        print(f"  test after ritz m={ritz_m}: k RMSE {test['ritz_k_pcm_rmse']:.2f} pcm, median {test['ritz_k_pcm_median']:.3f} pcm, "
+              f"flux L2 mean {test['ritz_flux_l2_mean']:.4f}")
     print("  config: " + ", ".join(f"{k}={v}" for k, v in best_config.items()))
     print(f"wrote {out}")
 

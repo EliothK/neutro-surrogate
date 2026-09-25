@@ -26,7 +26,29 @@ METRICS = ("eigen_pcm_median", "eigen_pcm_p95", "flux_l2_median", "flux_l2_max")
 DEFAULT_CONFIG = {"epochs": DEFAULT_EPOCHS, "lr": DEFAULT_LR, "batch_size": DEFAULT_BATCH_SIZE, "width": DEFAULT_WIDTH,
                   "depth": DEFAULT_DEPTH, "lam": DEFAULT_LAM, "mu_max": DEFAULT_MU_MAX, "ramp_frac": DEFAULT_RAMP_FRAC,
                   "weight_decay": DEFAULT_WEIGHT_DECAY, "dropout": DEFAULT_DROPOUT, "activation": DEFAULT_ACTIVATION,
-                  "scheduler": DEFAULT_SCHEDULER, "train_fraction": DEFAULT_TRAIN_FRACTION, "grad_clip": DEFAULT_GRAD_CLIP}
+                  "scheduler": DEFAULT_SCHEDULER, "train_fraction": DEFAULT_TRAIN_FRACTION, "grad_clip": DEFAULT_GRAD_CLIP,
+                  "flux_loss": "mse", "zone_head": False}
+RITZ_METRICS = ("ritz_k_pcm_rmse", "ritz_k_pcm_median", "ritz_flux_l2_mean")
+
+
+def ritz_metrics(model, norm, positions, eigenvalue, flux, ritz_m):
+    """Errors of the hybrid pipeline (1 inverse-power step, Ritz re-fit with ritz_m hats, 1 more step): k RMSE and median in pcm, mean flux relative L2."""
+    from .hybrid import predict  # local import: hybrid imports train, which crossval also uses
+
+    out = predict(model, norm, positions, refine=1, ritz_m=ritz_m)
+    k_err = (out["k"] - eigenvalue.double()).abs() * 1e5
+    ref = flux.double()
+    l2 = (out["flux"] - ref).norm(dim=-1) / ref.norm(dim=-1)
+    return {"ritz_k_pcm_rmse": float(k_err.pow(2).mean().sqrt()), "ritz_k_pcm_median": float(k_err.median()),
+            "ritz_flux_l2_mean": float(l2.mean())}
+
+
+def score_split(model, norm, positions, eigenvalue, flux, ritz_m=0):
+    """`evaluate` metrics, plus the hybrid-pipeline metrics when ritz_m > 0."""
+    metrics = evaluate(model, norm, positions, eigenvalue, flux)
+    if ritz_m > 0:
+        metrics.update(ritz_metrics(model, norm, positions, eigenvalue, flux, ritz_m))
+    return metrics
 
 
 def make_folds(pool, k, seed=FOLD_SEED):
@@ -42,10 +64,11 @@ def _pool(idx):
     return np.concatenate([idx["train"].cpu().numpy(), idx["val"].cpu().numpy()])
 
 
-def cross_validate(data, config, use_physics=False, folds=DEFAULT_FOLDS, seed=0, device=None, loaded=None, after_fold=None):
+def cross_validate(data, config, use_physics=False, folds=DEFAULT_FOLDS, seed=0, device=None, loaded=None, after_fold=None, ritz_m=0):
     """Train `folds` models and return per-fold metrics plus their mean and standard deviation.
 
     `after_fold(i, per_fold)` is called after each fold; it may raise to abandon the run (used for pruning).
+    With ritz_m > 0 every fold is also scored through the hybrid pipeline (see `ritz_metrics`).
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     positions, eigenvalue, flux, idx, _ = loaded or load_split(data, device)
@@ -54,23 +77,24 @@ def cross_validate(data, config, use_physics=False, folds=DEFAULT_FOLDS, seed=0,
     for tr, va in make_folds(_pool(idx), folds):
         tr, va = (torch.tensor(a, dtype=torch.long, device=device) for a in (tr, va))
         model, norm, _, _ = train(data, use_physics=use_physics, seed=seed, device=device, verbose=False, split={"train": tr, "val": va}, **config)
-        per_fold.append(evaluate(model, norm, positions[va], eigenvalue[va], flux[va]))
+        per_fold.append(score_split(model, norm, positions[va], eigenvalue[va], flux[va], ritz_m))
         if after_fold is not None:
             after_fold(len(per_fold) - 1, per_fold)
 
+    keys = METRICS + (RITZ_METRICS if ritz_m > 0 else ())
     return {"folds": per_fold,
-            "mean": {m: float(np.mean([f[m] for f in per_fold])) for m in METRICS},
-            "std": {m: float(np.std([f[m] for f in per_fold], ddof=1)) for m in METRICS}}
+            "mean": {m: float(np.mean([f[m] for f in per_fold])) for m in keys},
+            "std": {m: float(np.std([f[m] for f in per_fold], ddof=1)) for m in keys}}
 
 
-def refit_and_test(data, config, use_physics=False, seed=0, device=None, loaded=None):
+def refit_and_test(data, config, use_physics=False, seed=0, device=None, loaded=None, ritz_m=0):
     """Train once on the whole train + val pool and score the held-out test split."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     positions, eigenvalue, flux, idx, _ = loaded or load_split(data, device)
     pool = torch.tensor(_pool(idx), dtype=torch.long, device=device)
     model, norm, _, _ = train(data, use_physics=use_physics, seed=seed, device=device, verbose=False, split={"train": pool, "val": idx["val"]}, **config)
     te = idx["test"]
-    return evaluate(model, norm, positions[te], eigenvalue[te], flux[te])
+    return score_split(model, norm, positions[te], eigenvalue[te], flux[te], ritz_m)
 
 
 def main():

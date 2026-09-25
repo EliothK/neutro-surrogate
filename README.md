@@ -166,6 +166,12 @@ python -m src.study --folds 3 --trials 30             # cheaper
 
 Trials are stored in SQLite (`results/optuna_<dataset>[_physics].db`), so a crash or restart loses at most the trials in flight; rerun the same command to resume (`--trials` is the total wanted, resumed trials count). Pass `--fresh` to start over and `--timeout-hours` to cap wall-clock time. Outputs: `results/tune_<dataset>[_physics].json` (best config, CV mean and std, test metrics, noise margin), a trials CSV beside it, and `figures/tuning/<dataset>_{history,importance,folds}.png`.
 
+`--objective ritz` tunes for the hybrid pipeline of step 8 instead: every fold is also run through one inverse-power step and a Ritz re-fit (`--ritz`, default 17), and trials are scored on the resulting `k` RMSE and mean flux relative L2 against the default config scored the same way. It also adds `flux_loss` and `zone_head` to the search space, and it uses its own study (`results/optuna_<dataset>[_physics]_ritz.db`, `results/tune_<...>_ritz.json`), so it never mixes with the default-objective studies.
+
+```bash
+python -m src.tune --data data/dataset_natural.npz --physics --objective ritz --folds 3 --trials 80 --timeout-hours 5
+```
+
 Cost: each trial is `--folds` trainings, and the search space allows up to 800 epochs and width 768, so trials vary a lot in length. Use fewer folds or trials, or `--timeout-hours`, to bound it.
 
 **8. Hybrid prediction.** The operator is symmetric, so `k` computed from the predicted flux by a Rayleigh quotient has an error quadratic in the flux error, far below the network's own eigenvalue head. `src.hybrid` adds these stages on top of the network:
