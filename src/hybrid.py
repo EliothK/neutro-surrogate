@@ -149,6 +149,7 @@ def main():
     p.add_argument("--refine", type=int, default=1, help="inverse-power steps applied to the surrogate flux")
     p.add_argument("--fallback", type=float, default=0.05, help="fraction of val sent to the solver; sets the residual threshold")
     p.add_argument("--calibrate-on", default="val", help="split used to set the threshold; use a split the model did not train on")
+    p.add_argument("--eval-data", default=None, help="score the test split of this dataset instead (e.g. an --ood set); the threshold is still set on --data")
     p.add_argument("--timing", action="store_true", help="also time each stage against the solver on the test split")
     p.add_argument("--results", default=None)
     args = p.parse_args()
@@ -164,9 +165,11 @@ def main():
     resid_cal = predict(model, norm, positions[cal], refine=args.refine)["residual"].cpu().numpy()
     threshold = float(np.quantile(resid_cal, 1.0 - args.fallback)) if args.fallback > 0 else None
 
+    if args.eval_data:
+        positions, eigenvalue, flux, idx, _ = load_split(args.eval_data, device)
     te = idx["test"]
-    report = {"model": args.model, "data": args.data, "refine": args.refine, "threshold": threshold,
-              "calibrated_on": args.calibrate_on, "target_fallback": args.fallback}
+    report = {"model": args.model, "data": args.data, "eval_data": args.eval_data or args.data, "refine": args.refine,
+              "threshold": threshold, "calibrated_on": args.calibrate_on, "target_fallback": args.fallback}
     for name, thr in (("surrogate_only", None), ("gated", threshold)):
         report[name] = score(predict(model, norm, positions[te], refine=args.refine, threshold=thr),
                              eigenvalue[te].double(), flux[te].double())

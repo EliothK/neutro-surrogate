@@ -115,7 +115,13 @@ Other training options (defaults keep the original behaviour):
 - `--zone-head`: adds a per-zone log-amplitude, interpolated onto the cells and multiplied into the flux, so the power split between fuel regions has its own outputs.
 - The CLI restores the weights with the best validation eigenvalue error; `--no-keep-best` keeps the last epoch instead, and `--patience N` stops after `N` epochs without improvement.
 
-On the rescaled test split (tuned physics config, trained on train only, two seeds), `--zone-head --flux-loss blend` cut the median flux relative L2 error from 0.83% to 0.62% and the mean from about 2.1% to 1.9%.
+These options are off by default because their effect depends on the dataset (tuned physics configs, trained on train only, two seeds):
+
+- On the rescaled test split, `--zone-head --flux-loss blend` cut the median flux relative L2 error from 0.83% to 0.62% and the mean from about 2.1% to 1.9%.
+- On the natural test split it made every flux metric worse (flux R^2 0.965 vs 0.971, mean relative L2 4.3% vs 3.8%) and raised the direct `k` RMSE from about 510 to 590 pcm.
+- On the out-of-distribution sets the results were mixed: better flux MAPE, but a heavier Rayleigh-quotient `k` tail.
+
+Neither option was part of the hyperparameter search, so treat them as candidates to tune per dataset rather than as improvements.
 
 **4. Benchmark the trained surrogate(s)** against the direct solver and the non-neural baselines (ridge regression, gradient-boosted trees), including timing/speedup:
 
@@ -184,3 +190,22 @@ Test-split results for a zone-head + blend model (batch of 3000 on a GTX 1080 Ti
 | 5% | 0.7% | 2.8 pcm | 1.0 pcm | about 15x |
 
 The solver calls set the cost, so the speedup is capped near `1 / fallback`. For a single sample the hybrid is no faster than the solver, since per-call overhead dominates at that size.
+
+Pass `--eval-data` to score a different dataset with the threshold still set on `--data`, for example an out-of-distribution set:
+
+```bash
+python -m src.hybrid --model models/<checkpoint>.pt --data data/dataset_rescaled.npz --eval-data data/ood_rescaled.npz --refine 1 --fallback 0.02
+```
+
+Results across datasets (2% gate calibrated on in-distribution validation, MSE-loss models, two seeds):
+
+| evaluated on | direct `k` RMSE | Rayleigh `k` RMSE, no gate | Rayleigh `k` RMSE, gated | sent to solver |
+|---|---|---|---|---|
+| rescaled test | 171 to 177 pcm | 84 to 95 pcm | 7 to 52 pcm | about 2% |
+| rescaled OOD | 3900 to 4200 pcm | 820 to 950 pcm | about 21 pcm | 17 to 18% |
+| natural test | about 510 pcm | 200 to 220 pcm | 130 to 145 pcm | about 2% |
+| natural OOD | about 6000 pcm | 1470 to 1600 pcm | 250 to 360 pcm | about 18% |
+
+The Rayleigh-quotient `k` beats the direct head on every set.
+The gate fails safe: a threshold that flags 2% of in-distribution samples flags about 18% of out-of-distribution ones by itself, trading speed for accuracy there.
+The natural dataset has a much heavier flux tail (relative L2 p99 above 110%), and the residual gate recovers less of it.
