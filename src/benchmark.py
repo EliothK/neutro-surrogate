@@ -18,7 +18,8 @@ def load_model(path, device=None):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(path, map_location=device, weights_only=False)
     model = SurrogateMLP(width=ckpt.get("width", DEFAULT_WIDTH), depth=ckpt.get("depth", DEFAULT_DEPTH),
-                         activation=ckpt.get("activation", DEFAULT_ACTIVATION), dropout=ckpt.get("dropout", DEFAULT_DROPOUT)).to(device)
+                         activation=ckpt.get("activation", DEFAULT_ACTIVATION), dropout=ckpt.get("dropout", DEFAULT_DROPOUT),
+                         zone_head=ckpt.get("zone_head", False)).to(device)
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
     norm = Normalizer.from_state_dict(ckpt["normalizer"])

@@ -1,6 +1,7 @@
 """Train the surrogate"""
 
 import argparse
+import copy
 import json
 import time
 
@@ -40,8 +41,14 @@ def train(data_path, epochs=DEFAULT_EPOCHS, batch_size=DEFAULT_BATCH_SIZE, lr=DE
           use_physics=False, mu_max=DEFAULT_MU_MAX, width=DEFAULT_WIDTH, depth=DEFAULT_DEPTH,
           ramp_frac=DEFAULT_RAMP_FRAC, weight_decay=DEFAULT_WEIGHT_DECAY, dropout=DEFAULT_DROPOUT,
           activation=DEFAULT_ACTIVATION, scheduler=DEFAULT_SCHEDULER, train_fraction=DEFAULT_TRAIN_FRACTION,
-          grad_clip=DEFAULT_GRAD_CLIP, split=None, device=None, seed=0, verbose=True):
-    """The eigenvalue and flux loss terms are put on a common scale before weighting"""
+          grad_clip=DEFAULT_GRAD_CLIP, split=None, device=None, seed=0, verbose=True,
+          keep_best=False, patience=0, flux_loss="mse", zone_head=False):
+    """The eigenvalue and flux loss terms are put on a common scale before weighting.
+    flux_loss "mse" is cell-wise MSE on the peak-normalised flux; "shape" is the squared L2 distance between L2-normalised profiles, which is smooth where two peaks are nearly equal and matches the relative L2 metric; "blend" is the sum of the two.
+    With keep_best, val is scored every epoch and the weights with the lowest median eigenvalue error are restored at the end;
+    patience > 0 also stops after that many epochs without improvement.
+    Leave both off when val is inside the training pool (refits), where selecting on it would mean selecting on training data.
+    Returns (model, norm, idx, metrics), metrics being the val metrics of the returned weights."""
     torch.manual_seed(seed=seed)
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     positions, eigenvalue, flux, idx, _ = load_split(data_path, device)
@@ -52,14 +59,14 @@ def train(data_path, epochs=DEFAULT_EPOCHS, batch_size=DEFAULT_BATCH_SIZE, lr=DE
 
     eigen_var = torch.log(eigenvalue[idx["train"]]).var().clamp_min(1e-12)
     flux_var = flux[idx["train"]].var().clamp_min(1e-12)
-    model = SurrogateMLP(width=width, depth=depth, activation=activation, dropout=dropout).to(device)
+    model = SurrogateMLP(width=width, depth=depth, activation=activation, dropout=dropout, zone_head=zone_head).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     sched = {"cosine": lambda: torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs),
              "linear": lambda: torch.optim.lr_scheduler.LinearLR(opt, 1.0, 0.0, total_iters=epochs),
              "none": lambda: torch.optim.lr_scheduler.LambdaLR(opt, lambda _: 1.0)}[scheduler]()
 
     tr = idx["train"][:max(1, int(train_fraction * len(idx["train"])))]
-    best = None
+    best, best_state, best_epoch = None, None, -1
     for epoch in range(epochs):
         perm = tr[torch.randperm(len(tr), device=device)]
         mu = physics_weight(epoch, epochs, mu_max, ramp_frac) if use_physics else 0.0
@@ -68,8 +75,10 @@ def train(data_path, epochs=DEFAULT_EPOCHS, batch_size=DEFAULT_BATCH_SIZE, lr=DE
             b = perm[i:i + batch_size]
             eigen_hat, flux_hat = model(norm(positions[b]))
 
-            loss = (F.mse_loss(torch.log(eigen_hat), torch.log(eigenvalue[b])) / eigen_var
-                    + lam * F.mse_loss(flux_hat, flux[b]) / flux_var)
+            shape_term = (F.normalize(flux_hat, dim=-1) - F.normalize(flux[b], dim=-1)).pow(2).sum(-1).mean()
+            mse_term = F.mse_loss(flux_hat, flux[b]) / flux_var
+            flux_term = {"mse": mse_term, "shape": shape_term, "blend": mse_term + shape_term}[flux_loss]
+            loss = F.mse_loss(torch.log(eigen_hat), torch.log(eigenvalue[b])) / eigen_var + lam * flux_term
             if mu > 0:
                 lower, diag, upper, fis_neu_prod = bands_from_input(positions[b])
                 loss = loss + mu * residual_loss(flux_hat, eigen_hat, lower, diag, upper, fis_neu_prod)
@@ -81,12 +90,26 @@ def train(data_path, epochs=DEFAULT_EPOCHS, batch_size=DEFAULT_BATCH_SIZE, lr=DE
             opt.step()
         sched.step()
 
-        if verbose and (epoch + 1) % max(1, epochs // 10) == 0:
+        log_now = verbose and (epoch + 1) % max(1, epochs // 10) == 0
+        if keep_best or log_now:
             m = evaluate(model, norm, positions[idx["val"]], eigenvalue[idx["val"]], flux[idx["val"]])
-            print(f"epoch {epoch + 1:4d} mu={mu:.3f} "
-                  f" val eigenvalue {m["eigen_pcm_median"]:8.1f} pcm flux {m['flux_l2_median']:.4f}")
-            best = m
-    return model, norm, idx, best
+            if log_now:
+                print(f"epoch {epoch + 1:4d} mu={mu:.3f} "
+                      f" val eigenvalue {m['eigen_pcm_median']:8.1f} pcm flux {m['flux_l2_median']:.4f}")
+            if keep_best and (best is None or m["eigen_pcm_median"] < best["eigen_pcm_median"]):
+                best, best_epoch = m, epoch
+                best_state = copy.deepcopy(model.state_dict())
+            elif keep_best and patience > 0 and epoch - best_epoch >= patience:
+                if verbose:
+                    print(f"early stop at epoch {epoch + 1}, best epoch {best_epoch + 1}")
+                break
+
+    if keep_best:
+        model.load_state_dict(best_state)
+        if verbose:
+            print(f"restored epoch {best_epoch + 1}: val eigenvalue {best['eigen_pcm_median']:.1f} pcm")
+        return model, norm, idx, best
+    return model, norm, idx, evaluate(model, norm, positions[idx["val"]], eigenvalue[idx["val"]], flux[idx["val"]])
 
 def main():
     p = argparse.ArgumentParser()
@@ -106,6 +129,10 @@ def main():
     p.add_argument("--scheduler", choices=("cosine", "linear", "none"), default=DEFAULT_SCHEDULER)
     p.add_argument("--train-fraction", type=float, default=DEFAULT_TRAIN_FRACTION)
     p.add_argument("--grad-clip", type=float, default=DEFAULT_GRAD_CLIP)
+    p.add_argument("--flux-loss", choices=("mse", "shape", "blend"), default="mse")
+    p.add_argument("--zone-head", action="store_true", help="add a per-zone amplitude head to the flux output")
+    p.add_argument("--patience", type=int, default=0, help="early-stopping patience in epochs (0 = off)")
+    p.add_argument("--no-keep-best", action="store_true", help="keep last-epoch weights instead of best val")
     p.add_argument("--out", default=None)
     args = p.parse_args()
 
@@ -116,7 +143,9 @@ def main():
                                 lr=args.lr, lam=args.lam, use_physics=args.physics, mu_max=args.mu_max,
                                 width=args.width, depth=args.depth, ramp_frac=args.ramp_frac,
                                 weight_decay=args.weight_decay, dropout=args.dropout, activation=args.activation,
-                                scheduler=args.scheduler, train_fraction=args.train_fraction, grad_clip=args.grad_clip)
+                                scheduler=args.scheduler, train_fraction=args.train_fraction, grad_clip=args.grad_clip,
+                                keep_best=not args.no_keep_best, patience=args.patience, flux_loss=args.flux_loss,
+                                zone_head=args.zone_head)
     dt = time.perf_counter() - t0
 
     name = "surrogate_physics.pt" if args.physics else "surrogate_data_only.pt"
@@ -130,6 +159,7 @@ def main():
         "depth": args.depth,
         "activation": args.activation,
         "dropout": args.dropout,
+        "zone_head": args.zone_head,
     }, out)
     print(f"wrote {out} ({dt:.1f} s)")
 
