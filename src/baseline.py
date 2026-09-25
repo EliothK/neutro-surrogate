@@ -5,13 +5,13 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import Ridge
 
 def fit_baselines(X_train, y_train, X_test, y_test, flux_train=None, flux_test=None):
-    """Fit ridge on gradient-boosted trees on eigenvalue, plus ridge on the flux profile"""
+    """Fit ridge and gradient-boosted trees on eigenvalue, plus ridge on the flux profile"""
 
     out = {}
 
     ridge = Ridge(alpha=1.0).fit(X_train, np.log(y_train))
     err = np.abs(np.exp(ridge.predict(X_test)) - y_test) * 1e5
-    out["ridge_eigen_pcm_meidan"] = float(np.median(err))
+    out["ridge_eigen_pcm_median"] = float(np.median(err))
     out["ridge_eigen_pcm_p95"] = float(np.quantile(err, 0.95))
 
     gbt = HistGradientBoostingRegressor(max_iter=300).fit(X_train, np.log(y_train))

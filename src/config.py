@@ -1,4 +1,4 @@
-"""Central configukration. Every other module reads ranges, sizes and paths from here."""
+"""Central configuration. Every other module reads ranges, sizes and paths from here."""
 
 from pathlib import Path
 

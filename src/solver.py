@@ -2,7 +2,10 @@
 
 Governing equation, eigenvalue form:
     -d/dx [ D(x) dphi/dx ] + Sa(x) phi(x) = (1/k) nSf(x) phi(x)
-    in english
+
+In plain English: neutrons lost by diffusing out of a point (first term) plus neutrons absorbed there (second term) must equal the neutrons produced there by fission, scaled down by k.
+Here phi is the neutron flux, D the diffusion coefficient, Sa the macroscopic absorption cross section and nSf the fission neutron production.
+k is the multiplication factor, the number that balances the equation: k = 1 means the chain reaction is self-sustaining (critical), k < 1 means it dies out and k > 1 means it grows.
 
 with zero flux at x = 0 and x = a.
 """
@@ -82,15 +85,15 @@ def solve_power(diff_coeff, macro_absorp_cross_section, fis_neu_prod, slabWidth,
         src_new = fis_neu_prod * new_neu_flux
         new_eigenvalue = eigenvalue * src_new.sum() / src.sum()
         pn, po = new_neu_flux / new_neu_flux.max(), neu_flux / neu_flux.max()
-        coverged = abs(new_eigenvalue - eigenvalue) / eigenvalue < total_eigenvalue and np.linalg.norm(pn - po) / np.linalg.norm(po) < total_neu_flux
+        converged = abs(new_eigenvalue - eigenvalue) / eigenvalue < total_eigenvalue and np.linalg.norm(pn - po) / np.linalg.norm(po) < total_neu_flux
         scale = new_neu_flux.max()
         neu_flux, eigenvalue, src = new_neu_flux / scale, new_eigenvalue, src_new / scale
-        if coverged:
+        if converged:
             return eigenvalue, neu_flux, it +1
     raise RuntimeError("power iteration did not converge")
 
 def solve_arpack(diff_coeff, macro_absorp_cross_section, fis_neu_prod, slab_width):
-    """Same eigenproblem via ARPACK on A^-1 F. Retruns (eigenvalue, peakNeutronFlux)"""
+    """Same eigenproblem via ARPACK on A^-1 F. Returns (eigenvalue, peakNeutronFlux)"""
 
     if not np.any(fis_neu_prod):
         raise ValueError("fission source is zero; eigenvalue problem is degenerate")

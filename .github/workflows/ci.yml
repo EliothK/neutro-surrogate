@@ -8,5 +8,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install numpy scipy scikit-learn torch matplotlib optuna pytest
+      - run: pip install --extra-index-url https://download.pytorch.org/whl/cpu -e ".[test]"
       - run: pytest -v
