@@ -1,0 +1,51 @@
+{
+  "data": "/var/home/elkk/Career/neutro-surrogate/data/dataset_rescaled.npz",
+  "physics": true,
+  "folds": 3,
+  "trials": 50,
+  "noise_margin": 0.04492040211007986,
+  "default_cv": {
+    "eigen_pcm_median": 353.5528971354167,
+    "eigen_pcm_p95": 1453.4336751302083,
+    "flux_l2_median": 0.04256820182005564,
+    "flux_l2_max": 1.9659429788589478
+  },
+  "beats_defaults": true,
+  "best": {
+    "config": {
+      "epochs": 700,
+      "lr": 0.0002550906464945322,
+      "batch_size": 128,
+      "width": 384,
+      "depth": 6,
+      "lam": 0.5873742676534282,
+      "mu_max": 0.012483832443587995,
+      "ramp_frac": 0.21942740140211028,
+      "weight_decay": 0.001377943594361816,
+      "dropout": 0.0,
+      "activation": "silu",
+      "scheduler": "linear",
+      "train_fraction": 1.0,
+      "grad_clip": 1.0
+    },
+    "score": 0.24810459198142337,
+    "cv_mean": {
+      "eigen_pcm_median": 87.03073120117188,
+      "eigen_pcm_p95": 429.89378865559894,
+      "flux_l2_median": 0.010644126062591871,
+      "flux_l2_max": 1.8553934892018635
+    },
+    "cv_std": {
+      "eigen_pcm_median": 3.7410524670351757,
+      "eigen_pcm_p95": 18.186555915971418,
+      "flux_l2_median": 0.00040678070993442774,
+      "flux_l2_max": 0.10515442694587593
+    },
+    "test": {
+      "eigen_pcm_median": 58.56752395629883,
+      "eigen_pcm_p95": 301.61859130859375,
+      "flux_l2_median": 0.007624237798154354,
+      "flux_l2_max": 1.7593799829483032
+    }
+  }
+}

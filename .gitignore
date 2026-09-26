@@ -5,4 +5,8 @@ models/*.pt
 
 variables.txt
 figures/
-results/
+results/*
+!results/metrics_*.json
+!results/tune_*.json
+!results/final_*.json
+!results/verify_*.json

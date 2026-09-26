@@ -1,0 +1,41 @@
+{
+  "n_test": 3000,
+  "surrogate": {
+    "eigen_pcm_median": 522.68505859375,
+    "eigen_pcm_p95": 2173.666259765625,
+    "eigen_pcm_max": 9073.9365234375,
+    "flux_l2_median": 0.033498615026474,
+    "flux_l2_p95": 0.2025410234928131,
+    "flux_l2_max": 1.8798573017120361,
+    "worst_flux_index": 2179,
+    "physics_residual": 0.13164879902908058
+  },
+  "timing": {
+    "device": "cuda:0",
+    "solver_ms_per_solve": 0.8588625502306968,
+    "surrogate_ms_single": 0.08152695023454726,
+    "speedup_single": 10.534707207368976,
+    "batch_size": 1000,
+    "surrogate_ms_per_sample_batched": 0.0001544659025967121,
+    "speedup_batched": 5560.208018678798
+  },
+  "surrogate_physics": {
+    "eigen_pcm_median": 542.6287841796875,
+    "eigen_pcm_p95": 2154.72607421875,
+    "eigen_pcm_max": 9291.970703125,
+    "flux_l2_median": 0.035673052072525024,
+    "flux_l2_p95": 0.213627889752388,
+    "flux_l2_max": 1.9487074613571167,
+    "worst_flux_index": 1960,
+    "physics_residual": 0.0021724810050981315
+  },
+  "baselines": {
+    "ridge_eigen_pcm_meidan": 11229.170173614555,
+    "ridge_eigen_pcm_p95": 30281.724102515764,
+    "gbt_eigen_pcm_median": 5352.22407704874,
+    "gbt_eigen_pcm_p95": 15492.026428918336,
+    "ridge_flux_l2_median": 0.6805576674429483,
+    "ridge_flux_l2_max": 1.5082750085643548,
+    "gbt_flux_note": "trees produce no flux profile; network required for shape"
+  }
+}

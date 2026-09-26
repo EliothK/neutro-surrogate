@@ -1,0 +1,67 @@
+{
+  "data": "data/dataset_rescaled.npz",
+  "physics": true,
+  "objective": "ritz",
+  "ritz": 17,
+  "folds": 3,
+  "trials": 59,
+  "noise_margin": 0.02676392811725581,
+  "default_cv": {
+    "eigen_pcm_median": 353.5528971354167,
+    "eigen_pcm_p95": 1453.4336751302083,
+    "flux_l2_median": 0.04256820182005564,
+    "flux_l2_max": 1.9659429788589478,
+    "ritz_k_pcm_rmse": 3.1630502442497836,
+    "ritz_k_pcm_median": 0.5414521966488431,
+    "ritz_flux_l2_mean": 0.0045508496539625395
+  },
+  "beats_defaults": true,
+  "best": {
+    "config": {
+      "epochs": 350,
+      "lr": 0.00010381988027538403,
+      "batch_size": 64,
+      "width": 384,
+      "depth": 4,
+      "lam": 7.189432452387191,
+      "mu_max": 0.07257138192322453,
+      "ramp_frac": 0.15834786322839464,
+      "weight_decay": 0.0003056353890886569,
+      "dropout": 0.0,
+      "activation": "relu",
+      "scheduler": "cosine",
+      "train_fraction": 1.0,
+      "grad_clip": 5.0,
+      "flux_loss": "mse",
+      "zone_head": true
+    },
+    "score": 0.24599461280677404,
+    "cv_mean": {
+      "eigen_pcm_median": 899.7539876302084,
+      "eigen_pcm_p95": 3156.81494140625,
+      "flux_l2_median": 0.024979868282874424,
+      "flux_l2_max": 1.9723960161209106,
+      "ritz_k_pcm_rmse": 0.4602461934231254,
+      "ritz_k_pcm_median": 0.052663783315735437,
+      "ritz_flux_l2_mean": 0.0015767881690310296
+    },
+    "cv_std": {
+      "eigen_pcm_median": 14.457408140776057,
+      "eigen_pcm_p95": 7.683989355145687,
+      "flux_l2_median": 0.0004995107583713331,
+      "flux_l2_max": 0.06843741643248914,
+      "ritz_k_pcm_rmse": 0.07574439455591733,
+      "ritz_k_pcm_median": 0.0012053519581119922,
+      "ritz_flux_l2_mean": 5.694929538538655e-05
+    },
+    "test": {
+      "eigen_pcm_median": 596.0106811523438,
+      "eigen_pcm_p95": 2141.602294921875,
+      "flux_l2_median": 0.01971159502863884,
+      "flux_l2_max": 1.821929693222046,
+      "ritz_k_pcm_rmse": 0.35226768040239953,
+      "ritz_k_pcm_median": 0.035121988650743674,
+      "ritz_flux_l2_mean": 0.001325383343991397
+    }
+  }
+}

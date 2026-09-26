@@ -46,7 +46,7 @@ Two dataset variants are built and benchmarked:
 
 ## Setup
 
-Requires Python 3.13 and a virtual environment.
+Requires Python 3.12 or newer and a virtual environment.
 
 ```bash
 python -m venv .venv
