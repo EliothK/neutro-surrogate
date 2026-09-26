@@ -235,3 +235,22 @@ Results with no gate and no solver calls (MSE-loss models, two seeds, batch of 3
 `M = 17` beats the 2% residual gate on both accuracy and speed, and it keeps its speed out of distribution, where the gate sends about 18% of samples to the solver.
 `M = 33` runs its small eigenproblems on the CPU, because batched GPU `eigh` is about 25x slower than the CPU above 32 x 32 on this setup.
 The network still matters: started from a flat flux instead, the same `M = 17` pipeline gives `k` RMSE of about 260 to 290 pcm.
+
+**Several models (largest `k` wins).** Pass more than one checkpoint to `--model` and every sample keeps the model whose Rayleigh or Ritz `k` is largest. Each of those values is a lower bound on the true `k`, so the largest is always the closest, and the combination is never worse than its best member. The report records which model was chosen for how many samples (`chosen_fraction`).
+
+```bash
+python -m src.hybrid --model models/<direct-tuned>.pt models/<ritz-tuned>.pt --data data/dataset_natural.npz --refine 1 --ritz 17 --fallback 0 --timing
+```
+
+This matters because a model tuned for this pipeline (`python -m src.tune --objective ritz`, step 7) is sharper in distribution but extrapolates worse than one tuned for its direct head. Pairing the two keeps the strengths of both (seed 0, trained on train only, `k` RMSE; seed 1 behaves the same way):
+
+| | direct-tuned alone | Ritz-tuned alone | both, largest `k` | speedup vs solver (batch of 3000) |
+|---|---|---|---|---|
+| natural test, `M = 17` | 4.55 pcm | 0.90 pcm | 0.54 pcm | 30x alone, 14x as a pair |
+| natural OOD, `M = 17` | 27.5 pcm | 317 pcm | 22.7 pcm | |
+| natural test, `M = 33` | 0.66 pcm | 0.08 pcm | 0.06 pcm | 8x alone, 4x as a pair |
+| natural OOD, `M = 33` | 1.9 pcm | 269 pcm | 0.8 pcm | |
+| rescaled test, `M = 17` | 1.49 pcm | 0.47 pcm | 0.33 pcm | 26x alone, 13x as a pair |
+| rescaled OOD, `M = 17` | 35.3 pcm | 81.2 pcm | 35.1 pcm | |
+
+The Ritz-tuned models have a poor direct eigenvalue head (about 1150 to 1600 pcm RMSE), so use them only through this pipeline.

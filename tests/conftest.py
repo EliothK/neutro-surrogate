@@ -22,14 +22,24 @@ def tiny_dataset(tmp_path_factory):
     return str(path)
 
 
+def _save_tiny(tiny_dataset, tmp_path_factory, name, zone_head, seed):
+    from src.train import train
+
+    model, norm, _, _ = train(tiny_dataset, device="cpu", verbose=False, zone_head=zone_head, seed=seed, **TINY_TRAIN)
+    path = tmp_path_factory.mktemp("models") / f"{name}.pt"
+    torch.save({"state_dict": model.state_dict(), "normalizer": norm.state_dict(), "physics": False,
+                "width": TINY_TRAIN["width"], "depth": TINY_TRAIN["depth"], "activation": "silu", "dropout": 0.0,
+                "zone_head": zone_head, "trained_on": "train"}, path)
+    return str(path)
+
+
 @pytest.fixture(scope="session")
 def tiny_checkpoint(tiny_dataset, tmp_path_factory):
     """A zone-head model trained for a few epochs on tiny_dataset, saved the way src.train saves checkpoints."""
-    from src.train import train
+    return _save_tiny(tiny_dataset, tmp_path_factory, "tiny", zone_head=True, seed=0)
 
-    model, norm, _, _ = train(tiny_dataset, device="cpu", verbose=False, zone_head=True, **TINY_TRAIN)
-    path = tmp_path_factory.mktemp("models") / "tiny.pt"
-    torch.save({"state_dict": model.state_dict(), "normalizer": norm.state_dict(), "physics": False,
-                "width": TINY_TRAIN["width"], "depth": TINY_TRAIN["depth"], "activation": "silu", "dropout": 0.0,
-                "zone_head": True, "trained_on": "train"}, path)
-    return str(path)
+
+@pytest.fixture(scope="session")
+def tiny_checkpoint_plain(tiny_dataset, tmp_path_factory):
+    """A second, different model (no zone head, another seed) for the multi-model paths."""
+    return _save_tiny(tiny_dataset, tmp_path_factory, "tiny_plain", zone_head=False, seed=1)
